@@ -168,7 +168,19 @@ def highlight_ma(row):
 
 # ================= 頁面與資料處理 =================
 st.set_page_config(layout="wide", page_title="0050 量化儀表板")
-st.title("我的 0050 績效儀表板 📈")
+
+# 取得目前台灣時間 (UTC+8) 作為網頁最後更新時間
+tz = datetime.timezone(datetime.timedelta(hours=8))
+refresh_time = datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+
+# 使用兩欄佈局：左邊放標題，右邊放更新時間
+title_col, time_col = st.columns([3, 1])
+with title_col:
+    st.title("我的 0050 績效儀表板 📈")
+with time_col:
+    # 往下推一點點，並使用 HTML/CSS 讓文字靠右且變灰色
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: right; color: #888888; font-size: 14px;'>🔄 網頁最後更新時間:<br><b>{refresh_time}</b></div>", unsafe_allow_html=True)
 
 # ⚡ 富果 Fugle 即時看板區塊 ⚡
 st.header("⚡ 0050 盤中即時報價 (Powered by Fugle)")
