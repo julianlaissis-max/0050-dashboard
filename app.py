@@ -6,11 +6,49 @@ import datetime
 from dateutil.relativedelta import relativedelta
 import time
 
-# ----------------- 運算與資料獲取函數區 -----------------
+# --- 富果 Fugle 套件 ---
+try:
+    from fugle_marketdata import RestClient
+except ImportError:
+    pass
+
+# ================= 運算與資料獲取函數區 =================
+
+FUGLE_API_KEY = "MjkwZTExZmEtOWJjMC00MDFmLTkwMDEtZjg5N2ZiYWY1ZTE3IDY1NTAwNDNiLTcxYWMtNGFmOC1iMmJlLWVmMjRhMWRmYTdhMw=="
+
+@st.cache_data(ttl=60) # 盤中即時報價，快取縮短為 60 秒！
+def get_fugle_realtime_0050():
+    """引擎零：富果 Fugle 盤中即時報價"""
+    try:
+        client = RestClient(api_key=FUGLE_API_KEY)
+        quote = client.stock.intraday.quote(symbol="0050")
+        
+        # 兼容不同版本的 Fugle API 字典結構防呆寫法
+        price = quote.get('lastPrice') or quote.get('closePrice') or quote.get('lastTrade', {}).get('price')
+        prev_close = quote.get('previousClose', price)
+        volume = quote.get('total', {}).get('tradeVolume', 0)
+        
+        # 取得最後交易時間
+        raw_time = quote.get('lastTrade', {}).get('time') or quote.get('total', {}).get('time', '最新即時')
+        trade_time = str(raw_time).split('.')[0] if raw_time else "最新即時"
+        
+        if price and prev_close:
+            change = price - prev_close
+            change_pct = (change / prev_close) * 100
+            return {
+                "price": price,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": volume,
+                "time": trade_time
+            }
+    except Exception as e:
+        return None
+    return None
 
 @st.cache_data(ttl=3600)
 def get_twse_0050_data(months=7):
-    """直攻證交所抓取 0050 普通交易資料"""
+    """引擎一：直攻證交所抓取 0050 普通交易資料"""
     today = datetime.date.today()
     dfs = []
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -44,7 +82,7 @@ def get_twse_0050_data(months=7):
 
 @st.cache_data(ttl=3600)
 def get_stock_data(stock_id, days=200):
-    """FinMind 抓取 50 檔成分股"""
+    """引擎二：FinMind 抓取 50 檔成分股"""
     start_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
     params = {"dataset": "TaiwanStockPrice", "data_id": stock_id, "start_date": start_date}
@@ -80,7 +118,7 @@ def compute_rsi(data, window=14):
 
 @st.cache_data(ttl=3600)
 def backtest_0050_strategy():
-    """回測 10 年使用 yfinance，並回傳今日實際狀況對比數值"""
+    """引擎三：回測 10 年使用 yfinance"""
     ticker = yf.Ticker("0050.TW")
     df = ticker.history(period="10y", auto_adjust=False).dropna(subset=['Close'])
     if len(df) < 60: return None
@@ -99,7 +137,6 @@ def backtest_0050_strategy():
     occurrences = len(target_days)
     win_rate = (target_days['Future_5d_Return'] > 0).mean() * 100 if occurrences > 0 else 0
     avg_return = target_days['Future_5d_Return'].mean() * 100 if occurrences > 0 else 0
-    
     return {
         "occurrences": occurrences, "win_rate": win_rate, "avg_return": avg_return,
         "current_price": current_price, "current_20ma": current_20ma,
@@ -117,9 +154,21 @@ def highlight_ma(row):
                 elif price < ma_val: styles[idx] = 'color: #09ab3b; font-weight: bold;'
     return styles
 
-# ----------------- 頁面與資料處理 -----------------
+# ================= 頁面與資料處理 =================
 st.set_page_config(layout="wide", page_title="0050 量化儀表板")
 st.title("我的 0050 績效儀表板 📈")
+
+# ⚡ 富果 Fugle 即時看板區塊 ⚡
+st.header("⚡ 0050 盤中即時報價 (Powered by Fugle)")
+fugle_data = get_fugle_realtime_0050()
+if fugle_data:
+    fc1, fc2, fc3 = st.columns(3)
+    fc1.metric("0050 即時股價", f"{fugle_data['price']:.2f}", f"{fugle_data['change_pct']:.2f}%")
+    fc2.metric("今日即時總量", f"{fugle_data['volume']:,} 張")
+    fc3.metric("最後交易時間", f"{fugle_data['time']}")
+else:
+    st.warning("⚠️ 目前無法連線至富果 API，可能非交易時間或金鑰失效。")
+st.divider()
 
 components = {
     "代號": ["2330.TW", "2454.TW", "2308.TW", "2317.TW", "3711.TW", "2303.TW", "1303.TW", "2383.TW", "3037.TW", "2881.TW", 
@@ -143,15 +192,13 @@ components = {
 }
 df_comp = pd.DataFrame(components)
 
-# 先在背景抓資料
+# 先在背景抓盤後歷史資料
 progress_bar = st.progress(0)
 status_text = st.empty()
-status_text.text("📡 正在向台灣證交所與 API 連線，獲取最新官方精確資料...")
+status_text.text("📡 正在向台灣證交所與 API 連線，獲取最新歷史技術線型資料...")
 
-# 抓取 0050
 df_0050_full = get_twse_0050_data(months=7)
 
-# 抓取成分股
 basic_results, tech_results = [], []
 for index, row in df_comp.iterrows():
     stock_id = row["代號"].split(".")[0]
@@ -178,7 +225,6 @@ for index, row in df_comp.iterrows():
     tech_results.append({"股票名稱": row["名稱"], "最新價格": today_p, "本益比": round(pe_ratio, 2), "RSI(7日)": round(rsi_7, 2), "RSI(14日)": round(rsi_14, 2), "今日成交量(張)": today_vol, "成交量增減(%)": vol_change_pct, "5MA": ma5, "10MA": ma10, "20MA": ma20, "60MA": ma60})
     progress_bar.progress((index + 1) / len(df_comp))
 
-# 資料準備完成，清除進度條
 progress_bar.empty()
 status_text.empty()
 
@@ -186,7 +232,7 @@ df_basic = pd.DataFrame(basic_results)
 df_tech = pd.DataFrame(tech_results)
 df_merged = pd.merge(df_basic, df_tech.drop(columns=['最新價格']), on="股票名稱")
 
-# ================= 產生 AI 動態摘要 (Executive Summary) =================
+# ================= 產生 AI 動態摘要 =================
 if not df_0050_full.empty:
     p_0050 = df_0050_full['Close'].iloc[-1]
     ma5_0050 = df_0050_full['Close'].rolling(5).mean().iloc[-1]
@@ -197,35 +243,20 @@ if not df_0050_full.empty:
     vol_0050 = df_0050_full['Volume'].iloc[-1] / 1000
     vol20_0050 = df_0050_full['Volume'].rolling(20).mean().iloc[-1] / 1000
     
-    # 判斷 0050 均線狀態
-    broken_mas = []
-    stand_mas = []
-    
-    if p_0050 < ma5_0050:
-        broken_mas.append("5日週")
-    else:
-        stand_mas.append("5日週")
-        
-    if p_0050 < ma10_0050:
-        broken_mas.append("10日雙週")
-    else:
-        stand_mas.append("10日雙週")
-        
-    if p_0050 < ma20_0050:
-        broken_mas.append("20日月")
-    else:
-        stand_mas.append("20日月")
-        
-    if p_0050 < ma60_0050:
-        broken_mas.append("60日季")
-    else:
-        stand_mas.append("60日季")
+    broken_mas, stand_mas = [], []
+    if p_0050 < ma5_0050: broken_mas.append("5日週")
+    else: stand_mas.append("5日週")
+    if p_0050 < ma10_0050: broken_mas.append("10日雙週")
+    else: stand_mas.append("10日雙週")
+    if p_0050 < ma20_0050: broken_mas.append("20日月")
+    else: stand_mas.append("20日月")
+    if p_0050 < ma60_0050: broken_mas.append("60日季")
+    else: stand_mas.append("60日季")
     
     str_broken = "、".join(broken_mas) + "線" if broken_mas else "無"
     str_stand = "、".join(stand_mas) + "線" if stand_mas else "無"
     vol_status = "放量" if vol_0050 > vol20_0050 else "量縮"
     
-    # 成分股分析
     above_5_up = df_merged[(df_merged['最新價格'] > df_merged['5MA']) & (df_merged['今日漲跌幅(%)'] > 0)]
     below_5_down = df_merged[(df_merged['最新價格'] < df_merged['5MA']) & (df_merged['今日漲跌幅(%)'] < 0)]
     top_above_5_sec = above_5_up['產業別'].value_counts().idxmax() if not above_5_up.empty else "無明顯強勢板塊"
@@ -236,154 +267,65 @@ if not df_0050_full.empty:
     top_above_10_sec = above_10_up['產業別'].value_counts().idxmax() if not above_10_up.empty else "無明顯強勢板塊"
     top_below_10_sec = below_10_down['產業別'].value_counts().idxmax() if not below_10_down.empty else "無明顯弱勢板塊"
 
-    # 弱勢股估值分析
     high_pe_weak = df_merged[(df_merged['最新價格'] < df_merged['20MA']) & (df_merged['本益比'] > 25)]
-    
-    # RSI 分析
     rsi_weak = df_merged[(df_merged['RSI(14日)'] < 40) | (df_merged['RSI(7日)'] < 40)]
     rsi_weak_sectors = list(rsi_weak['產業別'].value_counts().head(2).index)
     
-    st.success("### 🔥 今日盤勢速報 (Executive Summary)")
+    st.success("### 🔥 盤後技術面與籌碼速報 (Executive Summary)")
     st.markdown(f"""
-    * **0050 大盤狀態：** 目前收盤價 ({p_0050:.2f}) 跌破了 **{str_broken}**，站上 **{str_stand}**。今日呈現 **{vol_status}** 格局（成交量 {vol_0050:,.0f} 張 vs 20日均量 {vol20_0050:,.0f} 張），RSI(14) 為 **{rsi14_0050:.1f}**。
+    * **大盤歷史技術狀態：** 最新收盤價跌破了 **{str_broken}**，站上 **{str_stand}**。呈現 **{vol_status}** 格局（成交量 {vol_0050:,.0f} 張 vs 20日均量 {vol20_0050:,.0f} 張），RSI(14) 為 **{rsi14_0050:.1f}**。
     * **短線 (5MA) 多空交戰：** 站上 5MA 且上漲的強勢股中，以 **{top_above_5_sec}** ({len(above_5_up)}家) 表現最佳；跌破 5MA 且下跌的弱勢股，則由 **{top_below_5_sec}** ({len(below_5_down)}家) 領跌。
     * **波段 (10MA) 多空交戰：** 站上 10MA 且上漲以 **{top_above_10_sec}** ({len(above_10_up)}家) 居多；跌破 10MA 且下跌則以 **{top_below_10_sec}** ({len(below_10_down)}家) 居多。
     * **弱勢股估值體檢：** 跌破 20日均線的成分股中，有 **{len(high_pe_weak)} 家** 的本益比仍高於 25 倍，顯示這些高估值個股近期明顯面臨修正與獲利了結的壓力。
-    * **籌碼與動能 (RSI)：** 目前有 **{len(rsi_weak)} 家** 成分股的 7日或 14日 RSI 跌入弱勢區 (<40)，主要集中在 **{'、'.join(rsi_weak_sectors) if rsi_weak_sectors else '無'}** 產業，代表這些板塊近期籌碼較為沉重，需等待量縮打底。
+    * **籌碼與動能 (RSI)：** 目前有 **{len(rsi_weak)} 家** 成分股的 7日或 14日 RSI 跌入弱勢區 (<40)，主要集中在 **{'、'.join(rsi_weak_sectors) if rsi_weak_sectors else '無'}** 產業，需等待量縮打底。
     """)
 st.divider()
 
-# ================= 0050 專屬技術指標區塊 =================
-if not df_0050_full.empty and len(df_0050_full) >= 60:
-    st.header("🎯 元大台灣50 (0050) 技術指標")
-    latest_price = df_0050_full['Close'].iloc[-1]
-    yesterday_price = df_0050_full['Close'].iloc[-2]
-    change_0050 = (latest_price - yesterday_price) / yesterday_price * 100
-    
-    ma5 = df_0050_full['Close'].rolling(window=5).mean().iloc[-1]
-    ma20 = df_0050_full['Close'].rolling(window=20).mean().iloc[-1]
-    ma60 = df_0050_full['Close'].rolling(window=60).mean().iloc[-1]
-    rsi_14 = compute_rsi(df_0050_full['Close'], window=14).iloc[-1]
-    
-    vol_lots = int(df_0050_full['Volume'].iloc[-1] / 1000)
-    vol_20ma_lots = df_0050_full['Volume'].rolling(window=20).mean().iloc[-1] / 1000
-    
-    indicators_data = {
-        "項目": ["收盤價", "5 日（週線）", "20 日（月線）", "60 日（季線）", "RSI (14)", "成交量 (張)", "20 日均量 (張)"],
-        "數值": [f"{latest_price:.2f}", f"{ma5:.2f}", f"{ma20:.2f}", f"{ma60:.2f}", f"{rsi_14:.2f}", f"{vol_lots:,}", f"{vol_20ma_lots:,.2f}"]
-    }
-    df_indicators = pd.DataFrame(indicators_data)
-
-    col_a, col_b = st.columns([1, 1.5])
-    with col_a:
-        st.metric(label="0050 最新收盤價", value=f"{latest_price:.2f}", delta=f"{change_0050:.2f}%")
-        st.info("💡 **小提示：** 0050 最新動態請參考上方之 Executive Summary 速報！")
-    with col_b:
-        st.markdown("**指標數值**")
-        st.dataframe(df_indicators, hide_index=True, use_container_width=True)
-st.divider()
-
-# ================= 總體表現掃描區塊 =================
+# ================= 總體表現掃描與板塊區塊 =================
 st.header("🌟 成分股總體掃描 (Macro Overview)")
-
-up_count = (df_basic['今日漲跌幅(%)'] > 0).sum()
-down_count = (df_basic['今日漲跌幅(%)'] < 0).sum()
-flat_count = (df_basic['今日漲跌幅(%)'] == 0).sum()
-vol_up_count = (df_tech['成交量增減(%)'] > 0).sum()
-
-above_5 = (df_tech['最新價格'] > df_tech['5MA']).sum()
-below_5 = (df_tech['最新價格'] < df_tech['5MA']).sum()
-above_10 = (df_tech['最新價格'] > df_tech['10MA']).sum()
-below_10 = (df_tech['最新價格'] < df_tech['10MA']).sum()
-above_20 = (df_tech['最新價格'] > df_tech['20MA']).sum()
-below_20 = (df_tech['最新價格'] < df_tech['20MA']).sum()
-above_60 = (df_tech['最新價格'] > df_tech['60MA']).sum()
-below_60 = (df_tech['最新價格'] < df_tech['60MA']).sum()
-
-pe_high = (df_tech['本益比'] > 25).sum()
-pe_low = ((df_tech['本益比'] < 20) & (df_tech['本益比'] > 0)).sum()
-
-st.subheader("1️⃣ 基本與籌碼動能")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("上漲家數", f"{up_count} 家")
-c2.metric("下跌家數", f"{down_count} 家")
-c3.metric("平盤家數", f"{flat_count} 家")
-c4.metric("成交量量增家數", f"{vol_up_count} 家")
-
-st.subheader("2️⃣ 均線多空交戰 (高於 vs 跌破)")
-c5, c6, c7, c8 = st.columns(4)
-c5.metric("5MA (週線)", f"高於:{above_5} / 跌破:{below_5}")
-c6.metric("10MA (雙週線)", f"高於:{above_10} / 跌破:{below_10}")
-c7.metric("20MA (月線)", f"高於:{above_20} / 跌破:{below_20}")
-c8.metric("60MA (季線)", f"高於:{above_60} / 跌破:{below_60}")
-
-st.subheader("3️⃣ 估值家數分佈")
-c9, c10 = st.columns(2)
-c9.metric("🔥 偏貴/高成長 (P/E > 25)", f"{pe_high} 家")
-c10.metric("💰 合理/便宜 (P/E < 20)", f"{pe_low} 家")
-
-st.divider()
-
-# ================= 視覺化板塊與細項區塊 =================
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 產業板塊總體表現")
     sector_group = df_basic.groupby('產業別').agg(總權重_佔比=('權重(%)', 'sum'), 平均漲跌幅=('今日漲跌幅(%)', 'mean'), 上漲家數=('今日漲跌幅(%)', lambda x: (x > 0).sum()), 下跌家數=('今日漲跌幅(%)', lambda x: (x < 0).sum())).reset_index()
     sector_group['平均漲跌幅'] = sector_group['平均漲跌幅'].round(2)
     sector_group = sector_group.sort_values(by='總權重_佔比', ascending=False)
-    
-    st.dataframe(
-        sector_group,
-        column_config={
-            "總權重_佔比": st.column_config.ProgressColumn("權重佔比 (%)", format="%.2f", min_value=0, max_value=70),
-            "平均漲跌幅": st.column_config.NumberColumn("平均漲跌幅 (%)", format="%.2f %%")
-        },
-        use_container_width=True, hide_index=True
-    )
+    st.dataframe(sector_group, column_config={"總權重_佔比": st.column_config.ProgressColumn("權重佔比 (%)", format="%.2f", min_value=0, max_value=70), "平均漲跌幅": st.column_config.NumberColumn("平均漲跌幅 (%)", format="%.2f %%")}, use_container_width=True, hide_index=True)
 
 with col2:
     st.subheader("🔍 核心成分股細項表現")
     st.dataframe(df_basic[['股票名稱', '產業別', '權重(%)', '最新價格', '今日漲跌幅(%)']], use_container_width=True)
-
 st.divider()
 
+# ================= 技術面與籌碼區塊 =================
 st.subheader("📈 技術面與籌碼掃描 (MA & Volume)")
-st.write("目前價格高於均線顯示紅色，低於均線顯示綠色：")
-
 format_dict = {'最新價格': '{:.2f}', '成交量增減(%)': '{:.2f}', '5MA': '{:.2f}', '10MA': '{:.2f}', '20MA': '{:.2f}', '60MA': '{:.2f}'}
 tech_display_df = df_tech[['股票名稱', '最新價格', '今日成交量(張)', '成交量增減(%)', '5MA', '10MA', '20MA', '60MA']]
 styled_tech_df = tech_display_df.style.apply(highlight_ma, axis=1).format(format_dict)
 st.dataframe(styled_tech_df, use_container_width=True)
-
 st.divider()
 
 col3, col4 = st.columns(2)
 with col3:
     st.write("🔥 **本益比 > 25 倍 (偏貴/高成長)**")
     st.dataframe(df_tech[df_tech['本益比'] > 25][['股票名稱', '最新價格', '本益比', 'RSI(7日)', 'RSI(14日)']], hide_index=True, use_container_width=True)
-
 with col4:
     st.write("💰 **本益比 < 20 倍 (合理/便宜)**")
     st.dataframe(df_tech[(df_tech['本益比'] < 20) & (df_tech['本益比'] > 0)][['股票名稱', '最新價格', '本益比', 'RSI(7日)', 'RSI(14日)']], hide_index=True, use_container_width=True)
-
 st.divider()
 
+# ================= 回測與自動訊號區塊 =================
 st.subheader("🔮 歷史機率預測 (以 0050 為例)")
-st.write("利用過去 10 年的歷史數據，驗證特定條件下的上漲機率。")
 st.info("💡 **測試情境：** 當 0050 短線轉弱 (收盤價跌破 20MA) 且指標超賣 (RSI 14日 < 40) 時，買進抱 5 天。")
 
 res = backtest_0050_strategy()
-
 if res and res['occurrences'] > 0:
     c1, c2, c3 = st.columns(3)
     c1.metric(label="過去10年發生次數", value=f"{res['occurrences']} 次")
     c2.metric(label="未來 5 天上漲機率 (勝率)", value=f"{res['win_rate']:.1f}%")
     c3.metric(label="平均預期報酬率", value=f"{res['avg_return']:.2f}%")
     
-    # ======== 這裡就是剛才不小心遺失的「今日對比訊號區塊」，已經完全補回！ ========
     st.write("---")
     st.write("🎯 **今日 0050 實際狀況對比：**")
-    
     price_status = "🟢 尚未跌破" if res['current_price'] >= res['current_20ma'] else "🔴 已跌破 20MA"
     rsi_status = "🟢 尚未超賣" if res['current_rsi14'] >= 40 else "🔴 已進入超賣區"
     
@@ -394,5 +336,3 @@ if res and res['occurrences'] > 0:
         st.success("✨ **訊號觸發！** 目前 0050 完全符合測試情境，你可以參考上方的歷史勝率來決定是否佈局。")
     else:
         st.warning("⏳ **持續觀察中：** 目前尚未完全滿足跌破 20MA 且 RSI < 40 的條件，建議耐心等待資金買點。")
-else:
-    st.warning("歷史資料不足或沒有符合此條件的紀錄。")
