@@ -18,7 +18,7 @@ FUGLE_API_KEY = "MjkwZTExZmEtOWJjMC00MDFmLTkwMDEtZjg5N2ZiYWY1ZTE3IDY1NTAwNDNiLTc
 
 @st.cache_data(ttl=60) 
 def get_fugle_realtime_0050():
-    """引擎零：富果 Fugle 盤中即時報價"""
+    """引擎零：富果 Fugle 盤中即時報價 (已包含台灣時區校正)"""
     try:
         client = RestClient(api_key=FUGLE_API_KEY)
         quote = client.stock.intraday.quote(symbol="0050")
@@ -27,7 +27,7 @@ def get_fugle_realtime_0050():
         prev_close = quote.get('previousClose', price)
         volume = quote.get('total', {}).get('tradeVolume', 0)
         
-        # 時間格式轉換邏輯
+        # 時間格式與台灣時區 (UTC+8) 轉換邏輯
         raw_time = quote.get('lastTrade', {}).get('time') or quote.get('total', {}).get('time')
         trade_time = "最新即時"
         if raw_time:
@@ -37,10 +37,10 @@ def get_fugle_realtime_0050():
                     ts = ts / 1000000
                 elif ts > 10000000000:   # 處理毫秒 (13位數)
                     ts = ts / 1000
-                # 轉換為台灣時區的易讀格式
-                trade_time = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                # 強制轉換為台灣時區 UTC+8
+                tz = datetime.timezone(datetime.timedelta(hours=8))
+                trade_time = datetime.datetime.fromtimestamp(ts, tz=tz).strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
-                # 若為字串格式則直接切分
                 trade_time = str(raw_time).replace('T', ' ').split('.')[0]
         
         if price and prev_close:
@@ -112,6 +112,7 @@ def get_stock_data(stock_id, days=200):
 
 @st.cache_data(ttl=3600)
 def get_pe_ratio(ticker):
+    """取得 Yahoo Finance 本益比"""
     try:
         info = yf.Ticker(ticker).info
         return info.get('trailingPE') or info.get('forwardPE') or 0
